@@ -1,9 +1,7 @@
-```python
 from __future__ import annotations
 
 import streamlit as st
 
-# Import RAG pipeline functions
 from rag_pipeline import (
     get_threads,
     start_session,
@@ -12,9 +10,6 @@ from rag_pipeline import (
     reset_session,
 )
 
-# ---------------------------------
-# Streamlit Page Config
-# ---------------------------------
 st.set_page_config(
     page_title="ThreadRAG - Email Thread Intelligence",
     layout="wide",
@@ -22,10 +17,6 @@ st.set_page_config(
 
 st.title("ThreadRAG - AI Email Thread Intelligence System")
 
-
-# ---------------------------------
-# Session State Initialization
-# ---------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -39,9 +30,6 @@ if "debug" not in st.session_state:
     st.session_state.debug = None
 
 
-# ---------------------------------
-# Sidebar
-# ---------------------------------
 with st.sidebar:
 
     st.header("Session Controls")
@@ -102,18 +90,12 @@ with st.sidebar:
     )
 
 
-# ---------------------------------
-# Chat Display
-# ---------------------------------
 for message in st.session_state.messages:
 
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 
-# ---------------------------------
-# Chat Input
-# ---------------------------------
 prompt = st.chat_input(
     "Ask a question about this email thread or its attachments"
 )
@@ -150,9 +132,6 @@ if prompt:
             st.markdown(answer)
 
 
-# ---------------------------------
-# Debug Panel
-# ---------------------------------
 if st.session_state.debug:
 
     with st.expander("Debug Panel", expanded=False):
@@ -165,4 +144,3 @@ if st.session_state.debug:
 
         st.subheader("Citations")
         st.json(st.session_state.debug.get("citations"))
-```
