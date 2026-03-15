@@ -1,126 +1,145 @@
 from __future__ import annotations
+import os
 import streamlit as st
 
-st.set_page_config(page_title="Email + Attachment RAG", layout="wide")
-st.title("Email + Attachment RAG with Thread Memory")
+# LangChain + Groq imports
+from langchain.embeddings.groq import GroqEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.llms.groq import Groq
+from langchain.chains import RetrievalQA
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.docstore.document import Document
 
-# ----------------------------
-# Session state initialization
-# ----------------------------
+# ------------------------------------
+# ⚙️ Configure API keys (via env vars)
+# ------------------------------------
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+if not GROQ_API_KEY:
+    st.error("⚠️ Please set your Groq API key in Streamlit secrets as GROQ_API_KEY")
+    st.stop()
+
+# ------------------------------------
+# 📌 Load / index your documents here
+# ------------------------------------
+@st.cache_resource
+def build_vector_store() -> FAISS:
+    """
+    Build FAISS vector store with Groq embeddings.
+    Replace these sample docs with your email + attachment text.
+    """
+    raw_docs = [
+        Document(page_content="Project update email content..."),
+        Document(page_content="Invoice PDF text content..."),
+        Document(page_content="Meeting notes and summary content..."),
+    ]
+    
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    docs = splitter.split_documents(raw_docs)
+
+    embeddings = GroqEmbeddings(api_key=GROQ_API_KEY)
+    vectorstore = FAISS.from_documents(docs, embeddings)
+    return vectorstore
+
+vector_store = build_vector_store()
+
+# ------------------------------------
+# 🧠 RAG Answer function
+# ------------------------------------
+def ask_groq_rag(prompt: str, k: int = 3) -> dict[str, object]:
+    """
+    Retrieves top-k most relevant text chunks and uses Groq LLM for answer.
+    """
+    retriever = vector_store.as_retriever(search_kwargs={"k": k})
+    
+    qa = RetrievalQA.from_chain_type(
+        llm=Groq(api_key=GROQ_API_KEY),
+        chain_type="stuff",
+        retriever=retriever,
+        return_source_documents=True,
+    )
+
+    result = qa({"query": prompt})
+    docs = result.get("source_documents", [])
+
+    retrieved_docs = [
+        {"doc_id": f"doc_{i+1}", "content": doc.page_content} 
+        for i, doc in enumerate(docs)
+    ]
+    citations = [{"source": f"doc_{i+1}"} for i in range(len(docs))]
+
+    return {
+        "answer": result["result"],
+        "rewrite": prompt,
+        "retrieved": retrieved_docs,
+        "citations": citations,
+    }
+
+
+# ------------------------------------
+# 🎯 Streamlit UI & Session Logic
+# ------------------------------------
+st.set_page_config(page_title="Email + Attachment RAG (Groq)", layout="wide")
+st.title("📬 Email + Attachment RAG powered by Groq")
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
 if "debug" not in st.session_state:
     st.session_state.debug = None
-if "threads" not in st.session_state:
-    st.session_state.threads = []
 
-# ----------------------------
-# Simulated backend functions
-# ----------------------------
-def fetch_threads_local() -> list[dict]:
-    """Simulate fetching threads."""
-    # Replace with real data source or RAG index
-    return [
-        {"thread_id": "t1", "subject": "Project Update", "message_count": 3},
-        {"thread_id": "t2", "subject": "Invoice Details", "message_count": 2},
-        {"thread_id": "t3", "subject": "Meeting Notes", "message_count": 5},
-    ]
-
-def start_session_local(thread_id: str) -> str:
-    """Simulate starting a session."""
-    return f"session_{thread_id}"
-
-def switch_thread_local(thread_id: str) -> str:
-    """Simulate switching threads."""
-    return f"session_{thread_id}"
-
-def reset_session_local() -> None:
-    """Simulate resetting session."""
-    return None
-
-def ask_local(thread_id: str, prompt: str, search_outside_thread: bool) -> dict:
-    """Simulate answering a query with a RAG-style response."""
-    # This is where you integrate your actual model / document retrieval
-    answer = f"Simulated answer for thread '{thread_id}': {prompt}"
-    return {
-        "answer": answer,
-        "rewrite": f"Rewritten query for: {prompt}",
-        "retrieved": [{"doc_id": "doc1", "content": "Sample content"}],
-        "citations": [{"source": "doc1"}]
-    }
-
-# ----------------------------
-# Sidebar
-# ----------------------------
+# Sidebar: Thread selector simulation
 with st.sidebar:
-    st.header("Session")
-    search_outside_thread = st.toggle("Search outside thread", value=False)
-
-    # Load threads once
-    if not st.session_state.threads:
-        st.session_state.threads = fetch_threads_local()
-
-    labels = {
-        item["thread_id"]: f"{item['thread_id']} | {item.get('subject') or 'No subject'} | {item.get('message_count', 0)} messages"
-        for item in st.session_state.threads
+    st.header("Session Controls")
+    threads = {
+        "t1": "Project Update",
+        "t2": "Invoice Details",
+        "t3": "Meeting Notes",
     }
-    selected_thread = st.selectbox("Thread selector", list(labels.keys()), format_func=lambda key: labels[key])
-
-    if st.button("Start session", disabled=selected_thread is None):
-        st.session_state.session_id = start_session_local(selected_thread)
-        st.session_state.messages = []
-        st.session_state.debug = None
-
-    if st.button("Switch thread", disabled=selected_thread is None or st.session_state.session_id is None):
-        st.session_state.session_id = switch_thread_local(selected_thread)
+    selected_thread = st.selectbox("Choose thread", list(threads.keys()))
+    
+    if st.button("Start session"):
+        st.session_state.session_id = f"{selected_thread}_session"
         st.session_state.messages = []
         st.session_state.debug = None
 
     if st.button("Reset session"):
-        reset_session_local()
         st.session_state.session_id = None
         st.session_state.messages = []
         st.session_state.debug = None
 
-    st.caption(f"Current session: {st.session_state.session_id or 'None'}")
+    st.caption(f"Current Session: {st.session_state.session_id or 'None'}")
 
-# ----------------------------
-# Chat messages display
-# ----------------------------
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# Show existing messages
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
 
-# ----------------------------
-# Chat input
-# ----------------------------
-prompt = st.chat_input("Ask about the selected email thread or its attachments")
+# User input
+prompt = st.chat_input("Ask about this thread or its attachments:")
 
 if prompt:
     if not st.session_state.session_id:
-        st.warning("Start a session before asking questions.")
+        st.warning("Start the session first!")
     else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        result = ask_local(selected_thread, prompt, search_outside_thread)
-        st.session_state.messages.append({"role": "assistant", "content": result["answer"]})
-        st.session_state.debug = result
+        response = ask_groq_rag(prompt)
+        st.session_state.debug = response
+        st.session_state.messages.append({"role": "assistant", "content": response["answer"]})
 
         with st.chat_message("assistant"):
-            st.markdown(result["answer"])
+            st.markdown(response["answer"])
 
-# ----------------------------
 # Debug panel
-# ----------------------------
 if st.session_state.debug:
-    with st.expander("Debug panel", expanded=True):
-        st.subheader("Rewritten query")
+    with st.expander("🔍 Debug Info", expanded=True):
+        st.subheader("Rewritten Query")
         st.code(st.session_state.debug["rewrite"])
-        st.subheader("Retrieved documents")
+        st.subheader("Retrieved Docs")
         st.json(st.session_state.debug["retrieved"])
         st.subheader("Citations")
         st.json(st.session_state.debug["citations"])
