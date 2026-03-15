@@ -1,126 +1,104 @@
 from __future__ import annotations
 
-import requests
 import streamlit as st
+import json
+from pathlib import Path
+
+from rag_pipeline import RAGPipeline
 
 
-API_URL = "http://localhost:8000"
+INDEX_DIR = "indexes"
+
+st.set_page_config(page_title="ThreadRAG", layout="wide")
+st.title("ThreadRAG – AI Email Thread Intelligence System")
 
 
-def fetch_threads(api_url: str) -> list[dict[str, object]]:
-    response = requests.get(f"{api_url}/threads", timeout=10)
-    response.raise_for_status()
-    return response.json()
+@st.cache_resource
+def load_pipeline():
+    return RAGPipeline(index_dir=INDEX_DIR)
 
 
-def start_session(api_url: str, thread_id: str) -> dict[str, object]:
-    response = requests.post(f"{api_url}/start_session", json={"thread_id": thread_id}, timeout=20)
-    response.raise_for_status()
-    return response.json()
+pipeline = load_pipeline()
 
 
-def switch_thread(api_url: str, session_id: str, thread_id: str) -> dict[str, object]:
-    response = requests.post(
-        f"{api_url}/switch_thread",
-        json={"session_id": session_id, "thread_id": thread_id},
-        timeout=20,
-    )
-    response.raise_for_status()
-    return response.json()
+def load_threads():
+    threads_path = Path(INDEX_DIR) / "threads.json"
+    if not threads_path.exists():
+        return []
+    return json.loads(threads_path.read_text())
 
 
-def ask(api_url: str, session_id: str, text: str, search_outside_thread: bool) -> dict[str, object]:
-    response = requests.post(
-        f"{api_url}/ask",
-        json={
-            "session_id": session_id,
-            "text": text,
-            "search_outside_thread": search_outside_thread,
-        },
-        timeout=60,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def reset_session(api_url: str, session_id: str | None) -> dict[str, object]:
-    response = requests.post(f"{api_url}/reset_session", json={"session_id": session_id}, timeout=20)
-    response.raise_for_status()
-    return response.json()
-
-
-st.set_page_config(page_title="Email + Attachment RAG", layout="wide")
-st.title("Email + Attachment RAG with Thread Memory")
+threads = load_threads()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "session_id" not in st.session_state:
-    st.session_state.session_id = None
-if "debug" not in st.session_state:
-    st.session_state.debug = None
+
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = None
+
 
 with st.sidebar:
-    st.header("Session")
-    api_url = st.text_input("API URL", value=API_URL)
-    search_outside_thread = st.toggle("Search outside thread", value=False)
 
-    try:
-        threads = fetch_threads(api_url)
+    st.header("Thread Selection")
+
+    if threads:
         labels = {
-            item["thread_id"]: f"{item['thread_id']} | {item.get('subject') or 'No subject'} | {item.get('message_count', 0)} messages"
+            item["thread_id"]: f"{item['thread_id']} | {item.get('subject') or 'No subject'} | {item.get('message_count',0)} messages"
             for item in threads
         }
-        selected_thread = st.selectbox("Thread selector", list(labels.keys()), format_func=lambda key: labels[key])
-    except Exception as exc:
-        threads = []
-        selected_thread = None
-        st.error(f"Unable to load threads: {exc}")
 
-    if st.button("Start session", disabled=selected_thread is None):
-        result = start_session(api_url, selected_thread)
-        st.session_state.session_id = result["session_id"]
-        st.session_state.messages = []
-        st.session_state.debug = None
+        selected_thread = st.selectbox(
+            "Thread selector",
+            list(labels.keys()),
+            format_func=lambda key: labels[key],
+        )
 
-    if st.button("Switch thread", disabled=selected_thread is None or st.session_state.session_id is None):
-        result = switch_thread(api_url, st.session_state.session_id, selected_thread)
-        st.session_state.session_id = result["session_id"]
-        st.session_state.messages = []
-        st.session_state.debug = None
+        if st.button("Select thread"):
+            st.session_state.thread_id = selected_thread
+            st.session_state.messages = []
 
-    if st.button("Reset session"):
-        reset_session(api_url, st.session_state.session_id)
-        st.session_state.session_id = None
-        st.session_state.messages = []
-        st.session_state.debug = None
+    else:
+        st.warning("No threads available. Run ingestion first.")
 
-    st.caption(f"Current session: {st.session_state.session_id or 'None'}")
+    st.caption(f"Current thread: {st.session_state.thread_id or 'None'}")
+
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-prompt = st.chat_input("Ask about the selected email thread or its attachments")
+
+prompt = st.chat_input("Ask about the selected email thread")
+
 if prompt:
-    if not st.session_state.session_id:
-        st.warning("Start a session before asking questions.")
-    else:
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
 
-        result = ask(api_url, st.session_state.session_id, prompt, search_outside_thread)
-        st.session_state.messages.append({"role": "assistant", "content": result["answer"]})
-        st.session_state.debug = result
+    if not st.session_state.thread_id:
+        st.warning("Select a thread first.")
+        st.stop()
 
-        with st.chat_message("assistant"):
-            st.markdown(result["answer"])
+    st.session_state.messages.append({"role": "user", "content": prompt})
 
-if st.session_state.debug:
-    with st.expander("Debug panel", expanded=True):
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    result = pipeline.ask(
+        question=prompt,
+        thread_id=st.session_state.thread_id,
+    )
+
+    answer = result["answer"]
+
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+
+    with st.expander("Debug panel"):
         st.subheader("Rewritten query")
-        st.code(st.session_state.debug["rewrite"])
+        st.code(result.get("rewrite"))
+
         st.subheader("Retrieved documents")
-        st.json(st.session_state.debug["retrieved"])
+        st.json(result.get("retrieved"))
+
         st.subheader("Citations")
-        st.json(st.session_state.debug["citations"])
+        st.json(result.get("citations"))
