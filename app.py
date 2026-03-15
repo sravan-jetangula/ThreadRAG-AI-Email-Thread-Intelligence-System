@@ -1,20 +1,25 @@
-from __future__ import annotations
-
-import requests
 import streamlit as st
-
-# Default API URL (change if you deploy backend)
-DEFAULT_API_URL = ""
+from rag_pipeline import RAGPipeline
 
 st.set_page_config(
     page_title="ThreadRAG - Email Thread Intelligence",
     layout="wide"
 )
 
-st.title("ThreadRAG – AI Email Thread Intelligence System")
+st.title("Email + Attachment RAG with Thread Memory")
 
 # -----------------------------
-# Session State Initialization
+# Load Pipeline
+# -----------------------------
+
+@st.cache_resource
+def load_pipeline():
+    return RAGPipeline()
+
+pipeline = load_pipeline()
+
+# -----------------------------
+# Session State
 # -----------------------------
 
 if "messages" not in st.session_state:
@@ -26,59 +31,6 @@ if "session_id" not in st.session_state:
 if "debug" not in st.session_state:
     st.session_state.debug = None
 
-# -----------------------------
-# API Functions
-# -----------------------------
-
-def safe_request(method, url, **kwargs):
-    try:
-        response = requests.request(method, url, timeout=60, **kwargs)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        st.error(f"API Connection Error: {e}")
-        return None
-
-
-def fetch_threads(api_url):
-    return safe_request("GET", f"{api_url}/threads")
-
-
-def start_session(api_url, thread_id):
-    return safe_request(
-        "POST",
-        f"{api_url}/start_session",
-        json={"thread_id": thread_id},
-    )
-
-
-def switch_thread(api_url, session_id, thread_id):
-    return safe_request(
-        "POST",
-        f"{api_url}/switch_thread",
-        json={"session_id": session_id, "thread_id": thread_id},
-    )
-
-
-def ask(api_url, session_id, text, search_outside_thread):
-    return safe_request(
-        "POST",
-        f"{api_url}/ask",
-        json={
-            "session_id": session_id,
-            "text": text,
-            "search_outside_thread": search_outside_thread,
-        },
-    )
-
-
-def reset_session(api_url, session_id):
-    return safe_request(
-        "POST",
-        f"{api_url}/reset_session",
-        json={"session_id": session_id},
-    )
-
 
 # -----------------------------
 # Sidebar
@@ -86,83 +38,66 @@ def reset_session(api_url, session_id):
 
 with st.sidebar:
 
-    st.header("Session Settings")
+    st.header("Session")
 
-    api_url = st.text_input(
-        "Backend API URL",
-        value=DEFAULT_API_URL,
-        placeholder="https://your-api-url.com"
-    )
+    threads = pipeline.list_threads()
 
-    search_outside_thread = st.toggle(
-        "Search outside thread",
-        value=False
-    )
+    if threads:
 
-    threads = []
+        labels = {
+            item["thread_id"]: f"{item['thread_id']} | {item.get('subject','No subject')} | {item.get('message_count',0)} messages"
+            for item in threads
+        }
 
-    if api_url:
-
-        threads = fetch_threads(api_url)
-
-        if threads:
-
-            labels = {
-                item["thread_id"]: f"{item['thread_id']} | {item.get('subject','No subject')} | {item.get('message_count',0)} messages"
-                for item in threads
-            }
-
-            selected_thread = st.selectbox(
-                "Select Email Thread",
-                list(labels.keys()),
-                format_func=lambda key: labels[key],
-            )
-
-        else:
-            selected_thread = None
+        selected_thread = st.selectbox(
+            "Thread selector",
+            list(labels.keys()),
+            format_func=lambda key: labels[key],
+        )
 
     else:
         selected_thread = None
-        st.info("Enter your backend API URL")
+        st.warning("No threads available")
 
-    if st.button("Start Session", disabled=selected_thread is None):
+    if st.button("Start session", disabled=selected_thread is None):
 
-        result = start_session(api_url, selected_thread)
+        result = pipeline.start_session(selected_thread)
 
-        if result:
-            st.session_state.session_id = result["session_id"]
-            st.session_state.messages = []
-            st.success("Session started")
+        st.session_state.session_id = result["session_id"]
+        st.session_state.messages = []
+        st.session_state.debug = None
+
+        st.success("Session started")
 
     if st.button(
-        "Switch Thread",
+        "Switch thread",
         disabled=selected_thread is None or st.session_state.session_id is None,
     ):
 
-        result = switch_thread(
-            api_url,
-            st.session_state.session_id,
+        result = pipeline.switch_thread(
             selected_thread,
+            session_id=st.session_state.session_id,
         )
 
-        if result:
-            st.session_state.messages = []
-            st.success("Thread switched")
+        st.session_state.session_id = result["session_id"]
+        st.session_state.messages = []
+        st.session_state.debug = None
 
-    if st.button("Reset Session"):
+        st.success("Thread switched")
 
-        if st.session_state.session_id:
+    if st.button("Reset session"):
 
-            reset_session(api_url, st.session_state.session_id)
+        pipeline.reset_session(st.session_state.session_id)
 
         st.session_state.session_id = None
         st.session_state.messages = []
+        st.session_state.debug = None
 
-    st.caption(f"Current Session: {st.session_state.session_id or 'None'}")
+    st.caption(f"Current session: {st.session_state.session_id or 'None'}")
 
 
 # -----------------------------
-# Chat Interface
+# Chat UI
 # -----------------------------
 
 for message in st.session_state.messages:
@@ -171,13 +106,13 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 
-prompt = st.chat_input("Ask about the email thread or attachments")
+prompt = st.chat_input("Ask about the selected email thread or its attachments")
 
 if prompt:
 
     if not st.session_state.session_id:
 
-        st.warning("Start a session first.")
+        st.warning("Start a session before asking questions.")
 
     else:
 
@@ -188,25 +123,21 @@ if prompt:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        result = ask(
-            api_url,
-            st.session_state.session_id,
-            prompt,
-            search_outside_thread,
+        result = pipeline.ask(
+            session_id=st.session_state.session_id,
+            text=prompt,
         )
 
-        if result:
+        answer = result.get("answer", "No answer found")
 
-            answer = result.get("answer", "No response")
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
+        )
 
-            st.session_state.messages.append(
-                {"role": "assistant", "content": answer}
-            )
+        st.session_state.debug = result
 
-            st.session_state.debug = result
-
-            with st.chat_message("assistant"):
-                st.markdown(answer)
+        with st.chat_message("assistant"):
+            st.markdown(answer)
 
 
 # -----------------------------
@@ -215,12 +146,12 @@ if prompt:
 
 if st.session_state.debug:
 
-    with st.expander("Debug Panel", expanded=False):
+    with st.expander("Debug panel", expanded=False):
 
-        st.subheader("Rewritten Query")
+        st.subheader("Rewritten query")
         st.code(st.session_state.debug.get("rewrite", ""))
 
-        st.subheader("Retrieved Documents")
+        st.subheader("Retrieved documents")
         st.json(st.session_state.debug.get("retrieved", []))
 
         st.subheader("Citations")
