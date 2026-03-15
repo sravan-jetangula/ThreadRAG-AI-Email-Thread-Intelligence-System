@@ -1,70 +1,63 @@
 import streamlit as st
-from rag_pipeline import RAGPipeline
 
 st.set_page_config(page_title="Email + Attachment RAG", layout="wide")
 st.title("Email + Attachment RAG with Thread Memory")
 
-# Load pipeline once
-@st.cache_resource
-def load_pipeline():
-    return RAGPipeline()
+# ---------------- Demo Email Threads ----------------
 
-pipeline = load_pipeline()
+threads = {
+    "finance-thread": {
+        "subject": "Budget discussion",
+        "messages": [
+            "The Q3 budget proposal was attached in the email.",
+            "Please review the financial report before Friday.",
+            "The marketing team requested an additional allocation."
+        ]
+    },
+    "project-thread": {
+        "subject": "AI Project Updates",
+        "messages": [
+            "The AI virtual doctor prototype has been deployed.",
+            "We integrated LangChain and RAG for document retrieval.",
+            "Testing will begin next week."
+        ]
+    }
+}
 
-# Session state
+# ---------------- Session State ----------------
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-if "session_id" not in st.session_state:
-    st.session_state.session_id = None
-
-if "debug" not in st.session_state:
-    st.session_state.debug = None
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = None
 
 # ---------------- Sidebar ----------------
 
 with st.sidebar:
+
     st.header("Session")
 
-    threads = pipeline.list_threads()
+    labels = {
+        key: f"{key} | {value['subject']} | {len(value['messages'])} messages"
+        for key, value in threads.items()
+    }
 
-    if threads:
-        labels = {
-            item["thread_id"]: f"{item['thread_id']} | {item.get('subject','No subject')} | {item.get('message_count',0)} messages"
-            for item in threads
-        }
+    selected_thread = st.selectbox(
+        "Thread selector",
+        list(labels.keys()),
+        format_func=lambda key: labels[key]
+    )
 
-        selected_thread = st.selectbox(
-            "Thread selector",
-            list(labels.keys()),
-            format_func=lambda key: labels[key]
-        )
-    else:
-        selected_thread = None
-        st.warning("No threads available")
-
-    if st.button("Start session", disabled=selected_thread is None):
-        result = pipeline.start_session(selected_thread)
-        st.session_state.session_id = result["session_id"]
+    if st.button("Start session"):
+        st.session_state.thread_id = selected_thread
         st.session_state.messages = []
-        st.session_state.debug = None
-
-    if st.button("Switch thread", disabled=selected_thread is None or st.session_state.session_id is None):
-        result = pipeline.switch_thread(
-            selected_thread,
-            session_id=st.session_state.session_id
-        )
-        st.session_state.session_id = result["session_id"]
-        st.session_state.messages = []
-        st.session_state.debug = None
 
     if st.button("Reset session"):
-        pipeline.reset_session(st.session_state.session_id)
-        st.session_state.session_id = None
+        st.session_state.thread_id = None
         st.session_state.messages = []
-        st.session_state.debug = None
 
-    st.caption(f"Current session: {st.session_state.session_id or 'None'}")
+    st.caption(f"Current thread: {st.session_state.thread_id or 'None'}")
 
 # ---------------- Chat ----------------
 
@@ -72,39 +65,33 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-prompt = st.chat_input("Ask about the selected email thread or its attachments")
+prompt = st.chat_input("Ask about the selected email thread")
 
 if prompt:
-    if not st.session_state.session_id:
-        st.warning("Start a session before asking questions.")
+
+    if not st.session_state.thread_id:
+        st.warning("Start a session first")
+
     else:
+
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        result = pipeline.ask(
-            session_id=st.session_state.session_id,
-            text=prompt
+        thread_messages = threads[st.session_state.thread_id]["messages"]
+
+        # simple retrieval (keyword match)
+        answer = "I couldn't find relevant info."
+
+        for msg in thread_messages:
+            if any(word.lower() in msg.lower() for word in prompt.split()):
+                answer = msg
+                break
+
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
         )
-
-        answer = result["answer"]
-
-        st.session_state.messages.append({"role": "assistant", "content": answer})
-        st.session_state.debug = result
 
         with st.chat_message("assistant"):
             st.markdown(answer)
-
-# ---------------- Debug Panel ----------------
-
-if st.session_state.debug:
-    with st.expander("Debug panel", expanded=True):
-        st.subheader("Rewritten query")
-        st.code(st.session_state.debug["rewrite"])
-
-        st.subheader("Retrieved documents")
-        st.json(st.session_state.debug["retrieved"])
-
-        st.subheader("Citations")
-        st.json(st.session_state.debug["citations"])
