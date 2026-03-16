@@ -1,23 +1,18 @@
 from __future__ import annotations
-
 import requests
 import streamlit as st
 
-
 API_URL = "http://localhost:8000"
-
 
 def fetch_threads(api_url: str) -> list[dict[str, object]]:
     response = requests.get(f"{api_url}/threads", timeout=10)
     response.raise_for_status()
     return response.json()
 
-
 def start_session(api_url: str, thread_id: str) -> dict[str, object]:
     response = requests.post(f"{api_url}/start_session", json={"thread_id": thread_id}, timeout=20)
     response.raise_for_status()
     return response.json()
-
 
 def switch_thread(api_url: str, session_id: str, thread_id: str) -> dict[str, object]:
     response = requests.post(
@@ -27,7 +22,6 @@ def switch_thread(api_url: str, session_id: str, thread_id: str) -> dict[str, ob
     )
     response.raise_for_status()
     return response.json()
-
 
 def ask(api_url: str, session_id: str, text: str, search_outside_thread: bool) -> dict[str, object]:
     response = requests.post(
@@ -42,12 +36,10 @@ def ask(api_url: str, session_id: str, text: str, search_outside_thread: bool) -
     response.raise_for_status()
     return response.json()
 
-
 def reset_session(api_url: str, session_id: str | None) -> dict[str, object]:
     response = requests.post(f"{api_url}/reset_session", json={"session_id": session_id}, timeout=20)
     response.raise_for_status()
     return response.json()
-
 
 st.set_page_config(page_title="Email + Attachment RAG", layout="wide")
 st.title("Email + Attachment RAG with Thread Memory")
@@ -101,6 +93,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 prompt = st.chat_input("Ask about the selected email thread or its attachments")
+
 if prompt:
     if not st.session_state.session_id:
         st.warning("Start a session before asking questions.")
