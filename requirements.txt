@@ -8,3 +8,9 @@ faiss-cpu==1.13.2
 rank-bm25
 beautifulsoup4
 scikit-learn
+streamlit
+pandas
+groq
+langchain
+faiss-cpu
+python-dotenv
