@@ -2,6 +2,8 @@ from __future__ import annotations
 import os
 import pandas as pd
 import streamlit as st
+import sys
+!pip list
 
 # LangChain + embeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
