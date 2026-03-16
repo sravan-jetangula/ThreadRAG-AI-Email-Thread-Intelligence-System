@@ -9,4 +9,4 @@ scikit-learn
 groq
 langchain
 python-dotenv
-groq
+openai
