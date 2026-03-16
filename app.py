@@ -3,7 +3,10 @@ import os
 import pandas as pd
 import streamlit as st
 import sys
-!pip list
+import pkg_resources
+
+installed_packages = [p.key for p in pkg_resources.working_set]
+st.write("Installed packages:", installed_packages)
 
 # LangChain + embeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
