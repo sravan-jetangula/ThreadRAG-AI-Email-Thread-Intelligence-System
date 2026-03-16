@@ -1,192 +1,131 @@
-from __future__ import annotations
+import streamlit as st
+from rag_pipeline import RagPipeline
 
-import argparse
-import json
-import re
-from pathlib import Path
-from collections import defaultdict
+st.set_page_config(
+    page_title="ThreadRAG - Email Thread Intelligence",
+    layout="wide"
+)
 
-import faiss
-import numpy as np
-import pandas as pd
-from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
+st.title("ThreadRAG – AI Email Thread Intelligence System")
 
+# ---------------------------
+# Load RAG Pipeline
+# ---------------------------
 
-def extract_subject(message: str) -> str:
-    """Extract subject from raw email text."""
-    match = re.search(r"Subject:(.*)", message)
-    if match:
-        return match.group(1).strip()
-    return "No subject"
+@st.cache_resource
+def load_pipeline():
+    return RagPipeline()
 
+pipeline = load_pipeline()
 
-def tokenize(text: str):
-    """Simple tokenizer."""
-    text = text.lower()
-    text = re.sub(r"[^a-z0-9 ]", " ", text)
-    return text.split()
+# ---------------------------
+# Session State
+# ---------------------------
 
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-def build_indexes(docs, index_dir: Path, model_name: str):
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = None
 
-    print("Preparing corpus...")
+if "debug" not in st.session_state:
+    st.session_state.debug = None
 
-    texts = [doc["text"] for doc in docs]
+# ---------------------------
+# Sidebar
+# ---------------------------
 
-    tokenized_corpus = [tokenize(text) for text in texts]
+with st.sidebar:
 
-    print("Building BM25 index...")
-    bm25 = BM25Okapi(tokenized_corpus)
+    st.header("Thread Settings")
 
-    print("Loading embedding model...")
-    model = SentenceTransformer(model_name)
+    threads = pipeline.get_threads()
 
-    print("Generating embeddings...")
-    embeddings = model.encode(
-        texts,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=True
-    )
+    if threads:
 
-    embeddings = np.asarray(embeddings, dtype="float32")
-
-    dimension = embeddings.shape[1]
-
-    print("Building FAISS index...")
-    faiss_index = faiss.IndexFlatIP(dimension)
-    faiss_index.add(embeddings)
-
-    index_dir.mkdir(parents=True, exist_ok=True)
-
-    faiss.write_index(faiss_index, str(index_dir / "faiss.index"))
-
-    (index_dir / "docs.json").write_text(
-        json.dumps(docs, indent=2, ensure_ascii=False),
-        encoding="utf-8"
-    )
-
-    (index_dir / "bm25_tokens.json").write_text(
-        json.dumps(tokenized_corpus),
-        encoding="utf-8"
-    )
-
-    # ---------- THREAD SUMMARY ----------
-    thread_map = defaultdict(list)
-
-    for doc in docs:
-        thread_map[doc["metadata"]["thread_id"]].append(doc)
-
-    threads = []
-
-    for thread_id, messages in thread_map.items():
-
-        subject = messages[0]["metadata"]["subject"]
-
-        threads.append({
-            "thread_id": thread_id,
-            "subject": subject,
-            "message_count": len(messages),
-            "attachments": []
-        })
-
-    threads.sort(key=lambda x: x["message_count"], reverse=True)
-
-    (index_dir / "threads.json").write_text(
-        json.dumps(threads, indent=2),
-        encoding="utf-8"
-    )
-
-
-def run_ingestion(args: argparse.Namespace):
-
-    print("Loading CSV dataset...")
-
-    df = pd.read_csv("data/enron/emails.csv")
-
-    if args.limit:
-        df = df.head(args.limit)
-
-    docs = []
-
-    print("Preparing documents...")
-
-    thread_map = {}
-
-    for i, row in df.iterrows():
-
-        message = str(row["message"])
-
-        subject = extract_subject(message)
-
-        thread_id = subject.lower().replace(" ", "_")[:60]
-
-        doc = {
-            "doc_id": f"email_{i}",
-            "text": message,
-            "metadata": {
-                "doc_id": f"email_{i}",
-                "thread_id": thread_id,
-                "message_id": i,
-                "subject": subject,
-                "source_type": "email"
-            }
+        labels = {
+            t["thread_id"]: f"{t['thread_id']} | {t.get('subject','No subject')} | {t.get('message_count',0)} messages"
+            for t in threads
         }
 
-        docs.append(doc)
+        selected_thread = st.selectbox(
+            "Select Thread",
+            list(labels.keys()),
+            format_func=lambda key: labels[key]
+        )
 
-    if not docs:
-        raise RuntimeError("No documents found in dataset")
+    else:
+        selected_thread = None
+        st.warning("No threads found")
 
-    print(f"Loaded {len(docs)} emails")
+    if st.button("Start Session"):
 
-    build_indexes(
-        docs,
-        index_dir=Path(args.index_dir),
-        model_name=args.embedding_model
-    )
+        st.session_state.thread_id = selected_thread
+        st.session_state.messages = []
+        st.success("Session started")
 
-    report = {
-        "emails_indexed": len(docs),
-        "document_chunks": len(docs)
-    }
+    if st.button("Reset Session"):
 
-    (Path(args.index_dir) / "ingest_report.json").write_text(
-        json.dumps(report, indent=2)
-    )
+        st.session_state.thread_id = None
+        st.session_state.messages = []
 
-    print("✅ Ingestion complete")
+    st.caption(f"Current thread: {st.session_state.thread_id or 'None'}")
 
-    return report
+# ---------------------------
+# Chat Interface
+# ---------------------------
 
+for message in st.session_state.messages:
 
-def parse_args():
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-    parser = argparse.ArgumentParser()
+prompt = st.chat_input("Ask about the email thread or attachments")
 
-    parser.add_argument(
-        "--index-dir",
-        default="indexes"
-    )
+if prompt:
 
-    parser.add_argument(
-        "--embedding-model",
-        default="sentence-transformers/all-MiniLM-L6-v2"
-    )
+    if not st.session_state.thread_id:
 
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=20000,
-        help="Limit emails for testing"
-    )
+        st.warning("Start a session first")
 
-    return parser.parse_args()
+    else:
 
+        st.session_state.messages.append(
+            {"role": "user", "content": prompt}
+        )
 
-if __name__ == "__main__":
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-    result = run_ingestion(parse_args())
+        result = pipeline.ask(
+            thread_id=st.session_state.thread_id,
+            query=prompt
+        )
 
-    print(json.dumps(result, indent=2))
+        answer = result.get("answer", "No answer found")
+
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer}
+        )
+
+        st.session_state.debug = result
+
+        with st.chat_message("assistant"):
+            st.markdown(answer)
+
+# ---------------------------
+# Debug Panel
+# ---------------------------
+
+if st.session_state.debug:
+
+    with st.expander("Debug Panel", expanded=False):
+
+        st.subheader("Rewritten Query")
+        st.code(st.session_state.debug.get("rewrite", ""))
+
+        st.subheader("Retrieved Documents")
+        st.json(st.session_state.debug.get("retrieved", []))
+
+        st.subheader("Citations")
+        st.json(st.session_state.debug.get("citations", []))
